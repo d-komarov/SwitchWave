@@ -31,6 +31,14 @@
 #include "ui/ui_common.hpp"
 #include "ui/ui_explorer.hpp"
 
+#ifndef APP_TITLE
+    #define APP_TITLE "SwitchWave"
+#endif
+
+#ifndef APP_VERSION
+    #define APP_VERSION "0.1.2"
+#endif
+
 namespace sw::ui {
 
 class MediaExplorer final: public Widget {

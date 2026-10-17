@@ -446,7 +446,7 @@ SeekBar::SeekBar(Renderer &renderer, Context &context, LibmpvController &lmpv):
     this->lmpv.observe_property("percent-pos", &this->percent_pos);
     this->lmpv.observe_property("chapter",     &this->chapter);
     this->lmpv.observe_property("media-title", &this->media_title);
-
+    
     this->lmpv.observe_property("chapter-list", MPV_FORMAT_NODE, nullptr, +[](void *user, mpv_event_property *prop) {
         auto *self     = static_cast<SeekBar  *>(user);
         auto *node     = static_cast<mpv_node *>(prop->data);
@@ -737,8 +737,13 @@ PlayerMenu::PlayerMenu(Renderer &renderer, Context &context, LibmpvController &l
                 .playing = !!LibmpvController::node_map_find<std::uint32_t>(entry, "current")
             };
 
-            self->playlist_info.emplace_back(std::move(track_info));
+            self->playlist_info.push_back(std::move(track_info));
         }
+    }, this);
+    this->lmpv.observe_property("playlist-pos", &this->playlist_selection_index, +[](void *user, mpv_event_property *prop) {
+        auto *self = static_cast<PlayerMenu *>(user);
+        self->playlist_selection_index = *static_cast<int64_t*>(prop->data);
+        self->force_scroll_to_selected = true;        
     }, this);
 
     this->last_stats_update = std::chrono::system_clock::now();
@@ -899,6 +904,7 @@ PlayerMenu::~PlayerMenu() {
     this->lmpv.unobserve_property("track-list");
     this->lmpv.unobserve_property("playlist");
     this->lmpv.unobserve_property("file-format");
+    this->lmpv.unobserve_property("playlist-pos");
     this->lmpv.unobserve_property("video-codec");
     this->lmpv.unobserve_property("audio-codec");
     this->lmpv.unobserve_property("hwdec-current");
@@ -1154,6 +1160,11 @@ void PlayerMenu::render() {
             ImGuiListClipper clipper;
             clipper.Begin(this->playlist_info.size());
 
+            if ((std::size_t)this->playlist_selection_index < this->playlist_info.size())
+            {
+                clipper.IncludeItemByIndex(this->playlist_selection_index);   
+            }
+
             while (clipper.Step()) {
                 for (auto i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
                     auto &track = this->playlist_info[i];
@@ -1161,18 +1172,47 @@ void PlayerMenu::render() {
                     if (track.id == this->playlist_selection_id)
                         cur_playlist_selection = i;
 
+                    const bool is_selected = (this->playlist_selection_index == i);
+                    bool any_item_focused_this_row = false;
+
                     if (ImGui::Button(make_id(i, "\ue0f2"))) {
                         std::snprintf(cbuf1.data(), cbuf1.capacity(), "%ld", std::int64_t(i));
                         this->lmpv.command_async("playlist-remove", cbuf1.c_str());
                     }
 
+                    if (ImGui::IsItemFocused()) any_item_focused_this_row = true;
+
                     ImGui::SameLine();
                     if (ImGui::RadioButton(make_id(i, "##"), track.id == this->playlist_selection_id))
                         this->playlist_selection_id = track.id;
 
+                    if (ImGui::IsItemFocused()) any_item_focused_this_row = true;
+
                     ImGui::SameLine();
-                    if (ImGui::Selectable(track.name.c_str(), track.playing))
+                    if (ImGui::Selectable(track.name.c_str(), is_selected))
+                    {
+                        this->playlist_selection_index = i;
                         lmpv.set_property_async("playlist-pos", std::int64_t(i));
+                    }
+
+                    if (ImGui::IsItemFocused()) any_item_focused_this_row = true;
+
+                    if (is_selected && force_scroll_to_selected)
+                    {
+                        ImGui::SetKeyboardFocusHere(-1);
+                    }
+
+                    if (any_item_focused_this_row) {
+                        ImGui::SetScrollX(0.0f);
+
+                        // Set the initial focus when opening the combo (scrolling + keyboard navigation focus)
+                        if (is_selected && force_scroll_to_selected)
+                        {
+                            ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleCenterY | ImGuiScrollFlags_KeepVisibleEdgeX);
+                            ImGui::SetScrollX(0.0f);
+                            force_scroll_to_selected = false;
+                        }
+                    }
                 }
             }
         }

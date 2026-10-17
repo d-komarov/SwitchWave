@@ -401,6 +401,8 @@ class PlayerMenu final: public Widget {
         Explorer         explorer;
 
         std::chrono::system_clock::time_point last_stats_update;
+        std::int64_t playlist_selection_index = {};
+        bool force_scroll_to_selected = true;
 
         std::int64_t playlist_selection_id = 0;
 
