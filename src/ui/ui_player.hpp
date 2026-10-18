@@ -20,6 +20,7 @@
 #include <chrono>
 #include <limits>
 #include <list>
+#include <random>
 #include <type_traits>
 #include <vector>
 
@@ -62,6 +63,59 @@ static constexpr ImGuiDataType to_imgui_data_type() {
         return -1;
 }
 
+struct MpvPlaylist
+{
+    struct PlaylistEntryInfo
+    {
+        std::string name;
+        std::int64_t id;
+        bool playing;
+    };
+
+    std::vector<PlaylistEntryInfo> entries;
+    std::vector<std::int64_t> history;
+    std::random_device rd;
+    bool shuffle = false;
+
+    std::int64_t playlist_selection_index = {};
+    bool force_scroll_to_selected = true;
+
+    void next(LibmpvController &lmpv)
+    {
+        if (shuffle)
+        {
+            history.push_back(playlist_selection_index);
+            pos(lmpv,
+                std::uniform_int_distribution<std::int64_t>{0, (std::int64_t)entries.size() - 1}(rd));
+        }
+        else
+        {
+            lmpv.command_async("playlist-next", "weak");
+        }
+    }
+
+    void prev(LibmpvController &lmpv)
+    {
+        if (shuffle)
+        {
+            if (history.size())
+            {
+                pos(lmpv, history.back());
+                history.pop_back();
+            }
+        }
+        else
+        {
+            lmpv.command_async("playlist-prev", "weak");
+        }
+    }
+
+    void pos(LibmpvController &lmpv, const std::int64_t &index)
+    {
+        lmpv.set_property_async("playlist-pos", index);
+    }
+};
+
 class SeekBar final: public Widget {
     public:
         using FloatUS = std::chrono::duration<float, std::micro>;
@@ -87,7 +141,7 @@ class SeekBar final: public Widget {
         constexpr static int     SeekBarPopButtons    = HidNpadButton_Left | HidNpadButton_Right;
 
     public:
-        SeekBar(Renderer &renderer, Context &context, LibmpvController &lmpv);
+        SeekBar(Renderer &renderer, Context &context, LibmpvController &lmpv, MpvPlaylist& playlist);
         virtual ~SeekBar() override;
 
         virtual bool update_state(PadState &pad, HidTouchScreenState &touch) override;
@@ -126,7 +180,8 @@ class SeekBar final: public Widget {
 
     private:
         LibmpvController &lmpv;
-        Context          &context;
+        Context &context;
+        MpvPlaylist &playlist;
 
         std::chrono::system_clock::time_point visible_start;
 
@@ -326,12 +381,6 @@ class PlayerMenu final: public Widget {
             std::vector<double> samples;
         };
 
-        struct PlaylistEntryInfo {
-            std::string name;
-            std::int64_t id;
-            bool playing;
-        };
-
     public:
         bool is_visible = false;
 
@@ -343,7 +392,7 @@ class PlayerMenu final: public Widget {
 
         std::vector<PassInfo> passes_info;
 
-        std::vector<PlaylistEntryInfo> playlist_info;
+        MpvPlaylist playlist;
 
         char *file_format = nullptr, *video_codec = nullptr, *audio_codec = nullptr,
             *hwdec_current = nullptr, *hwdec_interop = nullptr;
@@ -401,8 +450,6 @@ class PlayerMenu final: public Widget {
         Explorer         explorer;
 
         std::chrono::system_clock::time_point last_stats_update;
-        std::int64_t playlist_selection_index = {};
-        bool force_scroll_to_selected = true;
 
         std::int64_t playlist_selection_id = 0;
 
@@ -743,8 +790,8 @@ class PlayerGui final: public Widget {
         LibmpvController &lmpv;
         Context          &context;
 
-        SeekBar seek_bar;
         PlayerMenu menu;
+        SeekBar seek_bar;
         Console console;
 
         std::jthread screenshot_button_thread;

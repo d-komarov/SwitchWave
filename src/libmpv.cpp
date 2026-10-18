@@ -102,8 +102,10 @@ void LibmpvController::process_events() {
             case MPV_EVENT_END_FILE:
                 {
                     auto *end = static_cast<mpv_event_end_file *>(event->data);
-                    if (this->end_file_callback)
-                        this->end_file_callback(this->end_file_callback_user, end);
+                    for (auto &[user, callback] : this->end_file_callbacks) {
+                        if (callback)
+                            callback(user, end);
+                    }
                 }
                 break;
             case MPV_EVENT_IDLE:

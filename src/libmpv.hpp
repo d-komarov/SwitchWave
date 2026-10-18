@@ -59,8 +59,12 @@ class LibmpvController {
             this->file_loaded_callback = callback, this->file_loaded_callback_user = user;
         }
 
-        void set_end_file_callback(EndFileCallback callback, void *user = nullptr) {
-            this->end_file_callback = callback, this->end_file_callback_user = user;
+        void add_end_file_callback(EndFileCallback callback, void *user = nullptr) {
+            this->end_file_callbacks.emplace(user, callback);
+        }
+
+        void remove_end_file_callback(void *user) {
+            this->end_file_callbacks.erase(user);
         }
 
         void set_idle_callback(IdleCallback callback, void *user = nullptr) {
@@ -165,13 +169,12 @@ class LibmpvController {
     private:
         mpv_handle *mpv;
 
+        std::unordered_map<void *, EndFileCallback> end_file_callbacks;
         LogCallback log_callback                = nullptr;
         FileLoadedCallback file_loaded_callback = nullptr;
-        EndFileCallback end_file_callback       = nullptr;
         IdleCallback idle_callback              = nullptr;
         void *log_callback_user                 = nullptr;
         void *file_loaded_callback_user         = nullptr;
-        void *end_file_callback_user            = nullptr;
         void *idle_callback_user                = nullptr;
 
         // TODO: Try using std::list for these and pass ptrs to reply_userdata

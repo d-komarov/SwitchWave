@@ -164,7 +164,7 @@ void PlayerGui::screenshot_button_thread_fn(std::stop_token token) {
 
 PlayerGui::PlayerGui(Renderer &renderer, Context &context, LibmpvController &lmpv):
         Widget(renderer), lmpv(lmpv), context(context),
-        seek_bar(renderer, context, lmpv), menu(renderer, context, lmpv), console(renderer, lmpv) {
+        menu(renderer, context, lmpv), seek_bar(renderer, context, lmpv, menu.playlist), console(renderer, lmpv) {
     this->screenshot_button_thread = std::jthread(&PlayerGui::screenshot_button_thread_fn, this);
 
     auto &imstyle = ImGui::GetStyle();
@@ -419,8 +419,8 @@ void PlayerGui::render() {
     }
 }
 
-SeekBar::SeekBar(Renderer &renderer, Context &context, LibmpvController &lmpv):
-        Widget(renderer), lmpv(lmpv), context(context) {
+SeekBar::SeekBar(Renderer &renderer, Context &context, LibmpvController &lmpv, MpvPlaylist& pl):
+        Widget(renderer), lmpv(lmpv), context(context), playlist(pl) {
     this->play_texture      = this->renderer.load_texture("romfs:/textures/play-64*64-bc4.bc",
         64, 64, DkImageFormat_R_BC4_Unorm, DkImageFlags_Usage2DEngine);
     this->pause_texture     = this->renderer.load_texture("romfs:/textures/pause-64*64-bc4.bc",
@@ -446,7 +446,7 @@ SeekBar::SeekBar(Renderer &renderer, Context &context, LibmpvController &lmpv):
     this->lmpv.observe_property("percent-pos", &this->percent_pos);
     this->lmpv.observe_property("chapter",     &this->chapter);
     this->lmpv.observe_property("media-title", &this->media_title);
-    
+
     this->lmpv.observe_property("chapter-list", MPV_FORMAT_NODE, nullptr, +[](void *user, mpv_event_property *prop) {
         auto *self     = static_cast<SeekBar  *>(user);
         auto *node     = static_cast<mpv_node *>(prop->data);
@@ -583,13 +583,13 @@ void SeekBar::render() {
     ImGui::SameLine();
     if (ImGui::ImageButton("##previousbtn", ImGui::deko3d::makeTextureID(this->previous_texture.handle, true),
             ImVec2{img_size, img_size}, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), tint_col)) {
-        this->lmpv.command_async("playlist-prev", "weak");
+        this->playlist.prev(lmpv);
     }
 
     ImGui::SameLine();
     if (ImGui::ImageButton("##nextbtn",     ImGui::deko3d::makeTextureID(this->next_texture.handle,     true),
             ImVec2{img_size, img_size}, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), tint_col)) {
-        this->lmpv.command_async("playlist-next", "weak");
+        this->playlist.next(lmpv);
     }
 
     ImGui::SameLine(); ImGui::SetCursorPosY(win_cursor.y);
@@ -716,6 +716,14 @@ PlayerMenu::PlayerMenu(Renderer &renderer, Context &context, LibmpvController &l
         self->sub_tracks  [0].selected = !is_any_track_selected(self->sub_tracks);
     }, this);
 
+    this->lmpv.add_end_file_callback(+[](void *user, mpv_event_end_file *event) {
+        auto *self = static_cast<PlayerMenu *>(user);
+        if (event->reason == MPV_END_FILE_REASON_EOF)
+        {
+            self->playlist.next(self->lmpv);
+        }
+    }, this);
+
     this->lmpv.observe_property("playlist", MPV_FORMAT_NODE, nullptr, +[](void *user, mpv_event_property *prop) {
         auto *self     = static_cast<PlayerMenu *>(user);
         auto *node     = static_cast<mpv_node *>(prop->data);
@@ -723,7 +731,12 @@ PlayerMenu::PlayerMenu(Renderer &renderer, Context &context, LibmpvController &l
 
         SW_SCOPEGUARD([&node] { mpv_free_node_contents(node); });
 
-        self->playlist_info.clear();
+        if (self->playlist.entries.size() != (std::size_t)playlist->num)
+        {
+            self->playlist.history.clear();
+        }
+
+        self->playlist.entries.clear();
 
         for (int i = 0; i < playlist->num; ++i) {
             auto *entry = playlist->values[i].u.list;
@@ -731,19 +744,19 @@ PlayerMenu::PlayerMenu(Renderer &renderer, Context &context, LibmpvController &l
             auto *filename = LibmpvController::node_map_find<char *>(entry, "filename"),
                  *title    = LibmpvController::node_map_find<char *>(entry, "title");
 
-            auto track_info = PlaylistEntryInfo{
+            auto track_info = MpvPlaylist::PlaylistEntryInfo{
                 .name    =   title ?: fs::Path::filename(filename).data(),
                 .id      =   LibmpvController::node_map_find<std::int64_t> (entry, "id"),
                 .playing = !!LibmpvController::node_map_find<std::uint32_t>(entry, "current")
             };
 
-            self->playlist_info.push_back(std::move(track_info));
+            self->playlist.entries.push_back(std::move(track_info));
         }
     }, this);
-    this->lmpv.observe_property("playlist-pos", &this->playlist_selection_index, +[](void *user, mpv_event_property *prop) {
+    this->lmpv.observe_property("playlist-pos", MPV_FORMAT_INT64, nullptr, +[](void *user, mpv_event_property *prop) {
         auto *self = static_cast<PlayerMenu *>(user);
-        self->playlist_selection_index = *static_cast<int64_t*>(prop->data);
-        self->force_scroll_to_selected = true;        
+        self->playlist.playlist_selection_index = *static_cast<int64_t*>(prop->data);
+        self->playlist.force_scroll_to_selected = true;
     }, this);
 
     this->last_stats_update = std::chrono::system_clock::now();
@@ -1158,21 +1171,20 @@ void PlayerMenu::render() {
             SW_SCOPEGUARD([] { ImGui::SetWindowFontScale(1.0); });
 
             ImGuiListClipper clipper;
-            clipper.Begin(this->playlist_info.size());
+            clipper.Begin(this->playlist.entries.size());
 
-            if ((std::size_t)this->playlist_selection_index < this->playlist_info.size())
-            {
-                clipper.IncludeItemByIndex(this->playlist_selection_index);   
+            if ((std::size_t)this->playlist.playlist_selection_index < this->playlist.entries.size()) {
+                clipper.IncludeItemByIndex(this->playlist.playlist_selection_index);
             }
 
             while (clipper.Step()) {
                 for (auto i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-                    auto &track = this->playlist_info[i];
+                    auto &track = this->playlist.entries[i];
 
                     if (track.id == this->playlist_selection_id)
                         cur_playlist_selection = i;
 
-                    const bool is_selected = (this->playlist_selection_index == i);
+                    const bool is_selected = (this->playlist.playlist_selection_index == i);
                     bool any_item_focused_this_row = false;
 
                     if (ImGui::Button(make_id(i, "\ue0f2"))) {
@@ -1191,13 +1203,13 @@ void PlayerMenu::render() {
                     ImGui::SameLine();
                     if (ImGui::Selectable(track.name.c_str(), is_selected))
                     {
-                        this->playlist_selection_index = i;
-                        lmpv.set_property_async("playlist-pos", std::int64_t(i));
+                        this->playlist.playlist_selection_index = i;
+                        playlist.pos(lmpv, std::int64_t(i));
                     }
 
                     if (ImGui::IsItemFocused()) any_item_focused_this_row = true;
 
-                    if (is_selected && force_scroll_to_selected)
+                    if (is_selected && playlist.force_scroll_to_selected)
                     {
                         ImGui::SetKeyboardFocusHere(-1);
                     }
@@ -1205,12 +1217,11 @@ void PlayerMenu::render() {
                     if (any_item_focused_this_row) {
                         ImGui::SetScrollX(0.0f);
 
-                        // Set the initial focus when opening the combo (scrolling + keyboard navigation focus)
-                        if (is_selected && force_scroll_to_selected)
+                        if (is_selected && playlist.force_scroll_to_selected)
                         {
                             ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleCenterY | ImGuiScrollFlags_KeepVisibleEdgeX);
                             ImGui::SetScrollX(0.0f);
-                            force_scroll_to_selected = false;
+                            playlist.force_scroll_to_selected = false;
                         }
                     }
                 }
@@ -1232,13 +1243,19 @@ void PlayerMenu::render() {
         if (ImGui::Button("\ue093") && (cur_playlist_selection != -1ull)) {
             std::snprintf(cbuf1.data(), cbuf1.capacity(), "%ld", cur_playlist_selection);
             std::snprintf(cbuf2.data(), cbuf2.capacity(), "%ld",
-                (cur_playlist_selection == this->playlist_info.size() - 1) ? 0 : cur_playlist_selection + 2);
+                (cur_playlist_selection == this->playlist.entries.size() - 1) ? 0 : cur_playlist_selection + 2);
             this->lmpv.command_async("playlist-move", cbuf1.c_str(), cbuf2.c_str());
         }
 
         ImGui::SameLine();
         if (ImGui::Button("Clear"))
             this->lmpv.command_async("playlist-clear");
+
+        ImGui::SameLine();
+        if (!ImGui::Checkbox("Shuffle", &this->playlist.shuffle))
+        {
+            this->playlist.history.clear();
+        }
 
         ImGui::SeparatorText("Speed");
         this->speed_slider.run(this->lmpv, "Reset##speed");
