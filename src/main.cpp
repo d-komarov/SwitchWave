@@ -16,8 +16,8 @@
 // along with SwitchWave.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <cerrno>
-#include <cstdio>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <mutex>
 #include <optional>
@@ -32,6 +32,7 @@
 
 #include "libmpv.hpp"
 #include "render.hpp"
+#include "switch_rumble.hpp"
 #include "waves.hpp"
 #include "context.hpp"
 #include "ui/ui_main_menu.hpp"
@@ -194,6 +195,31 @@ void apply_pending_ums_changes(sw::Context &context) {
     }
 }
 
+constexpr unsigned int swapBits(unsigned int n, unsigned int p1, unsigned int p2) {
+    // Extract the bits at positions p1 and p2 and check if they differ
+    if (((n >> p1) & 1) != ((n >> p2) & 1)) {
+        // Create a mask for both positions
+        unsigned int mask = (1U << p1) | (1U << p2);
+        // Toggle the bits using XOR
+        n ^= mask;
+    }
+    return n;
+}
+
+constexpr unsigned int copyBit(unsigned int val, int pos, int from) {
+    // 1U creates an unsigned integer 1, then shifts it left by 'pos' positions
+    // The bitwise OR (|) copies a bit if it exists in either operand
+    return (val & ~(1U << pos)) | (static_cast<unsigned int>((val >> from) & 1U) << pos);
+}
+
+constexpr unsigned int moveBit(unsigned int val, int pos, int from) {
+    return copyBit(val, pos, from) ^ (1u << from);
+}
+
+static_assert(copyBit(0b00001101, 1, 0) == 0b00001111);
+static_assert(moveBit(0b00001101, 1, 0) == 0b00001110);
+static_assert((0b00001111 ^ (1u << 0)) == 0b00001110);
+
 int menu_loop(sw::Renderer &renderer, sw::Context &context) {
     renderer.switch_presentation_mode(false);
 
@@ -207,10 +233,64 @@ int menu_loop(sw::Renderer &renderer, sw::Context &context) {
             context.want_quit = true;
             break;
         }
-
+        
+        HidNpadJoyHoldType holdType = {};
+        hidGetNpadJoyHoldType(&holdType);
+        
         apply_pending_ums_changes(context);
-
         padUpdate(&g_pad);
+
+        if (padGetButtonsDown(&g_pad) & (HidNpadButton_LeftSL | HidNpadButton_LeftSR))
+        {
+            sw::SwitchRumble rumble(true);
+            rumble.send(0.2f, 0.8f);
+            holdType = holdType ? HidNpadJoyHoldType_Vertical : HidNpadJoyHoldType_Horizontal;
+            hidSetNpadJoyHoldType(holdType);
+            std::this_thread::sleep_for(50ms);
+            rumble.stop();
+            // std::array<HidVibrationDeviceHandle, 1> vibrationDeviceHandles = {};
+
+            // if (R_SUCCEEDED(hidInitializeVibrationDevices(vibrationDeviceHandles.data(),
+            //                         1, HidNpadIdType_No1, HidNpadStyleTag_NpadFullKey)))
+            // {
+            //     HidVibrationValue vibrationValue;
+            //     vibrationValue.amp_low   = 0.2f;
+            //     vibrationValue.freq_low  = 160.f;
+            //     vibrationValue.amp_high  = 0.8f;
+            //     vibrationValue.freq_high = 320.f;
+            //     hidSendVibrationValue(vibrationDeviceHandles[0], &vibrationValue);
+
+            //     holdType = holdType ? HidNpadJoyHoldType_Vertical : HidNpadJoyHoldType_Horizontal;
+            //     hidSetNpadJoyHoldType(holdType);
+            //     std::this_thread::sleep_for(50ms);
+
+            //     vibrationValue.amp_low = 0.f;
+            //     vibrationValue.amp_high = 0.f;
+            //     hidSendVibrationValue(vibrationDeviceHandles[0], &vibrationValue);
+            // }
+        }
+
+        if (HidNpadJoyHoldType_Horizontal == holdType)
+        {            
+#define REMAP_BUTTON(orig, dest) do { \
+    constexpr auto bitl_rev = [](unsigned long x){ return std::countr_zero(x); };  \
+    g_pad.buttons_cur = copyBit(g_pad.buttons_cur, bitl_rev(dest), bitl_rev(orig)); \
+    g_pad.buttons_old = copyBit(g_pad.buttons_old, bitl_rev(dest), bitl_rev(orig)); \
+} while (false);            
+            // Remap DPad buttons by "270 degrees rotation"
+            // g_pad.buttons_cur = swapBits(swapBits(swapBits(g_pad.buttons_cur, 12, 13), 14, 15), 13, 15);
+            // g_pad.buttons_old = swapBits(swapBits(swapBits(g_pad.buttons_old, 12, 13), 14, 15), 13, 15);
+            REMAP_BUTTON(HidNpadButton_Right, HidNpadButton_X);
+            REMAP_BUTTON(HidNpadButton_Down, HidNpadButton_A);
+            REMAP_BUTTON(HidNpadButton_Left, HidNpadButton_B);
+            REMAP_BUTTON(HidNpadButton_Up, HidNpadButton_Y);
+            REMAP_BUTTON(HidNpadButton_StickLRight, HidNpadButton_Up);
+            REMAP_BUTTON(HidNpadButton_StickLDown, HidNpadButton_Right);
+            REMAP_BUTTON(HidNpadButton_StickLLeft, HidNpadButton_Down);
+            REMAP_BUTTON(HidNpadButton_StickLUp, HidNpadButton_Left);
+#undef REMAP_BUTTON
+        }
+
         auto has_touches = hidGetTouchScreenStates(&g_touch_state, 1);
         ImGui::nx::newFrame(&g_pad, has_touches ? &g_touch_state : nullptr);
         ImGui::NewFrame();
@@ -241,7 +321,7 @@ int video_loop(sw::Renderer &renderer, sw::Context &context) {
         static_cast<sw::Context *>(user)->playback_started = true;
     }, &context);
 
-    lmpv.set_end_file_callback(+[](void *user, mpv_event_end_file *end) {
+    lmpv.add_end_file_callback(+[](void *user, mpv_event_end_file *end) {
         if (end->reason == MPV_END_FILE_REASON_ERROR)
             static_cast<sw::Context *>(user)->last_error = end->error;
     }, &context);
@@ -312,8 +392,40 @@ int video_loop(sw::Renderer &renderer, sw::Context &context) {
             context.set_error(-EIO);
             break;
         }
-
+        
+        HidNpadJoyHoldType holdType = {};
+        hidGetNpadJoyHoldType(&holdType);
+        
         padUpdate(&g_pad);
+
+        if (HidNpadJoyHoldType_Horizontal == holdType)
+        {
+#define REMAP_BUTTON(orig, dest) do { \
+constexpr auto bitl_rev = [](unsigned long x){ return std::countr_zero(x); };  \
+g_pad.buttons_cur = moveBit(g_pad.buttons_cur, bitl_rev(dest), bitl_rev(orig)); \
+g_pad.buttons_old = moveBit(g_pad.buttons_old, bitl_rev(dest), bitl_rev(orig)); \
+} while (false);
+#define REMAP_BUTTON_RETAIN(orig, dest) do { \
+constexpr auto bitl_rev = [](unsigned long x){ return std::countr_zero(x); };  \
+g_pad.buttons_cur = copyBit(g_pad.buttons_cur, bitl_rev(dest), bitl_rev(orig)); \
+g_pad.buttons_old = copyBit(g_pad.buttons_old, bitl_rev(dest), bitl_rev(orig)); \
+} while (false);
+            REMAP_BUTTON(HidNpadButton_Left, HidNpadButton_B);
+            REMAP_BUTTON(HidNpadButton_Right, HidNpadButton_X);
+            REMAP_BUTTON(HidNpadButton_Up, HidNpadButton_Y);
+            REMAP_BUTTON(HidNpadButton_Down, HidNpadButton_A);
+            REMAP_BUTTON(HidNpadButton_StickLUp, HidNpadButton_Left);
+            REMAP_BUTTON(HidNpadButton_StickLDown, HidNpadButton_Right);
+            REMAP_BUTTON(HidNpadButton_StickLRight, HidNpadButton_Up);
+            REMAP_BUTTON(HidNpadButton_StickLLeft, HidNpadButton_Down);
+            g_pad.sticks[0].y = std::exchange(g_pad.sticks[0].x, -g_pad.sticks[0].y);
+            g_pad.sticks[0].y = 0;
+            REMAP_BUTTON(HidNpadButton_LeftSL, HidNpadButton_ZL);
+            REMAP_BUTTON(HidNpadButton_LeftSR, HidNpadButton_ZR);
+#undef REMAP_BUTTON
+#undef REMAP_BUTTON_RETAIN
+        }
+
         auto has_touches = hidGetTouchScreenStates(&g_touch_state, 1);
         ImGui::nx::newFrame(&g_pad, has_touches ? &g_touch_state : nullptr);
         ImGui::NewFrame();
@@ -366,6 +478,7 @@ int main(int argc, const char **argv) {
     auto setup_thread = std::jthread(&mpv_presetup);
 
     hidSetNpadHandheldActivationMode(HidNpadHandheldActivationMode_Single);
+    hidSetNpadJoyHoldType(HidNpadJoyHoldType_Vertical);
     padConfigureInput(8, HidNpadStyleSet_NpadStandard);
     padInitializeAny(&g_pad);
 

@@ -164,16 +164,36 @@ void PlayerGui::screenshot_button_thread_fn(std::stop_token token) {
 
 PlayerGui::PlayerGui(Renderer &renderer, Context &context, LibmpvController &lmpv):
         Widget(renderer), lmpv(lmpv), context(context),
-        menu(renderer, context, lmpv), seek_bar(renderer, context, lmpv, menu.playlist), console(renderer, lmpv) {
+        menu(renderer, context, lmpv), seek_bar(renderer, context, lmpv, menu.playlist), console(renderer, lmpv)
+{
     this->screenshot_button_thread = std::jthread(&PlayerGui::screenshot_button_thread_fn, this);
+    this->lmpv.observe_property(
+        "playlist-pos", MPV_FORMAT_INT64, nullptr,
+        +[](void *user, mpv_event_property *prop) {
+            auto *self                        = static_cast<PlayerGui *>(user);
+            auto &playlist                    = self->menu.playlist;
+            playlist.playlist_selection_index = *static_cast<int64_t *>(prop->data);
+            playlist.force_scroll_to_selected = true;
+
+            if (playlist.entries.size() > (std::size_t)playlist.playlist_selection_index)
+            {
+                const auto &entry = playlist.entries[playlist.playlist_selection_index];
+                if (entry.playing) {
+                    self->set_show_string(3s, entry.name.c_str());
+                }
+            }
+        },
+        this);
 
     auto &imstyle = ImGui::GetStyle();
     imstyle.Alpha = 0.8f;
 }
 
-PlayerGui::~PlayerGui() {
+PlayerGui::~PlayerGui()
+{
     appletSetMediaPlaybackState(false);
 
+    this->lmpv.unobserve_property("playlist-pos");
     this->screenshot_button_thread.request_stop();
 }
 
@@ -184,51 +204,75 @@ bool PlayerGui::update_state(PadState &pad, HidTouchScreenState &touch) {
     if (down & HidNpadButton_Plus && !ImGui::nx::isSwkbdVisible())
         return false;
 
+    HidNpadJoyHoldType holdType = {};
+    hidGetNpadJoyHoldType(&holdType);
+    
     // Can only run when the swkbd isn't shown so don't bother using ImGui API
     if (!(this->menu.is_visible || this->console.is_visible)) {
         if (!this->seek_bar.is_visible && (down & (HidNpadButton_A | HidNpadButton_X)))
-            this->lmpv.set_property_async("pause", int(!this->seek_bar.pause));
-
+        this->lmpv.set_property_async("pause", int(!this->seek_bar.pause));
+        
         if (buttons & SeekBar::SeekBarPopButtons)
-            this->seek_bar.begin_visible();
-
+        this->seek_bar.begin_visible();
+        
         if ((buttons & (HidNpadButton_Up | HidNpadButton_Down)) &&
-                (down & (HidNpadButton_ZL | HidNpadButton_ZR))) {
+        (down & (HidNpadButton_ZL | HidNpadButton_ZR))) {
             auto chapter = this->seek_bar.chapter;
             if (down & HidNpadButton_ZL)
-                chapter -= 1;
+            chapter -= 1;
             if (down & HidNpadButton_ZR)
-                chapter += 1;
+            chapter += 1;
             this->lmpv.set_property_async("chapter", chapter);
         }
     }
 
-    if (down & (HidNpadButton_StickL | HidNpadButton_StickR)) {
+    const auto screensotButtonsMask =
+        HidNpadButton_StickR | (HidNpadJoyHoldType_Horizontal == holdType ? 0L : HidNpadButton_StickL);
+
+    if (down & screensotButtonsMask) {
         this->lmpv.command_async("screenshot", "subtitles");
         this->set_show_string(500ms, "Saving screenshot");
-    }
-
-    if (!ImGui::IsKeyDown(ImGuiKey_GamepadDpadDown) && !ImGui::IsKeyDown(ImGuiKey_GamepadDpadUp)) {
+    }    
+    
+    if (!ImGui::IsKeyDown(ImGuiKey_GamepadDpadDown) && !ImGui::IsKeyDown(ImGuiKey_GamepadDpadUp))
+    {
         constexpr static std::array key_seek_map = {
             std::pair{ImGuiKey_GamepadL1, -05.0},
             std::pair{ImGuiKey_GamepadL2, -60.0},
             std::pair{ImGuiKey_GamepadR1, +05.0},
             std::pair{ImGuiKey_GamepadR2, +60.0},
         };
-
+        
         bool has_seeked = false;
-        for (auto &&[key, time]: key_seek_map) {
-            if (ImGui::IsKeyPressed(key)) {
+        for (auto &&[key, time]: key_seek_map)
+        {
+            if (!ImGui::IsKeyPressed(key)) { continue; }
+
+            if (key == ImGuiKey_GamepadL2 && (buttons & HidNpadButton_StickL))
+            {
+                this->menu.playlist.prev(this->lmpv);
+                break;
+            }
+
+            if (key == ImGuiKey_GamepadR2 && (buttons & HidNpadButton_StickL))
+            {
+                this->menu.playlist.next(this->lmpv);
+                break;
+            }
+            
+            if (this->seek_bar.time_pos < this->seek_bar.duration)
+            {
                 this->lmpv.set_property_async("time-pos", this->seek_bar.time_pos + time);
                 has_seeked = true;
             }
         }
 
-        if (has_seeked && this->seek_bar.is_visible && !this->seek_bar.ignore_input)
+        if (has_seeked && !this->seek_bar.is_visible && !this->seek_bar.ignore_input)
             this->seek_bar.begin_visible();
     }
 
     auto &io = ImGui::GetIO();
+
     auto &js_lleft = io.KeysData[ImGuiKey_GamepadLStickLeft], &js_lright = io.KeysData[ImGuiKey_GamepadLStickRight],
          &js_rleft = io.KeysData[ImGuiKey_GamepadRStickLeft], &js_rright = io.KeysData[ImGuiKey_GamepadRStickRight],
          &js_rup   = io.KeysData[ImGuiKey_GamepadRStickUp],   &js_rdown  = io.KeysData[ImGuiKey_GamepadRStickDown];
@@ -718,8 +762,7 @@ PlayerMenu::PlayerMenu(Renderer &renderer, Context &context, LibmpvController &l
 
     this->lmpv.add_end_file_callback(+[](void *user, mpv_event_end_file *event) {
         auto *self = static_cast<PlayerMenu *>(user);
-        if (event->reason == MPV_END_FILE_REASON_EOF)
-        {
+        if (event->reason == MPV_END_FILE_REASON_EOF && self->playlist.shuffle) {            
             self->playlist.next(self->lmpv);
         }
     }, this);
@@ -736,7 +779,7 @@ PlayerMenu::PlayerMenu(Renderer &renderer, Context &context, LibmpvController &l
             self->playlist.history.clear();
         }
 
-        self->playlist.entries.clear();
+        self->playlist.entries.resize(playlist->num);
 
         for (int i = 0; i < playlist->num; ++i) {
             auto *entry = playlist->values[i].u.list;
@@ -750,14 +793,14 @@ PlayerMenu::PlayerMenu(Renderer &renderer, Context &context, LibmpvController &l
                 .playing = !!LibmpvController::node_map_find<std::uint32_t>(entry, "current")
             };
 
-            self->playlist.entries.push_back(std::move(track_info));
+            self->playlist.entries[i] = std::move(track_info);
         }
     }, this);
-    this->lmpv.observe_property("playlist-pos", MPV_FORMAT_INT64, nullptr, +[](void *user, mpv_event_property *prop) {
-        auto *self = static_cast<PlayerMenu *>(user);
-        self->playlist.playlist_selection_index = *static_cast<int64_t*>(prop->data);
-        self->playlist.force_scroll_to_selected = true;
-    }, this);
+    // this->lmpv.observe_property("playlist-pos", MPV_FORMAT_INT64, nullptr, +[](void *user, mpv_event_property *prop) {
+    //     auto *self = static_cast<PlayerMenu *>(user);
+    //     self->playlist.playlist_selection_index = *static_cast<int64_t*>(prop->data);
+    //     self->playlist.force_scroll_to_selected = true;
+    // }, this);
 
     this->last_stats_update = std::chrono::system_clock::now();
 
@@ -917,7 +960,7 @@ PlayerMenu::~PlayerMenu() {
     this->lmpv.unobserve_property("track-list");
     this->lmpv.unobserve_property("playlist");
     this->lmpv.unobserve_property("file-format");
-    this->lmpv.unobserve_property("playlist-pos");
+    //this->lmpv.unobserve_property("playlist-pos");
     this->lmpv.unobserve_property("video-codec");
     this->lmpv.unobserve_property("audio-codec");
     this->lmpv.unobserve_property("hwdec-current");
@@ -963,8 +1006,8 @@ PlayerMenu::~PlayerMenu() {
 
 bool PlayerMenu::update_state(PadState &pad, HidTouchScreenState &touch) {
     auto now = std::chrono::system_clock::now();
-
-    if ((padGetButtonsDown(&pad) & HidNpadButton_Y) && !ImGui::nx::isSwkbdVisible())
+  
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft) && !ImGui::nx::isSwkbdVisible())
         this->is_visible ^= 1;
 
     if (now - this->last_stats_update > PlayerMenu::StatsRefreshInterval) {

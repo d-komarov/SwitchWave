@@ -74,9 +74,7 @@ struct MpvPlaylist
 
     std::vector<PlaylistEntryInfo> entries;
     std::vector<std::int64_t> history;
-    std::random_device rd;
     bool shuffle = false;
-
     std::int64_t playlist_selection_index = {};
     bool force_scroll_to_selected = true;
 
@@ -85,8 +83,10 @@ struct MpvPlaylist
         if (shuffle)
         {
             history.push_back(playlist_selection_index);
+            auto seed = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+            std::mt19937 mt(seed);
             pos(lmpv,
-                std::uniform_int_distribution<std::int64_t>{0, (std::int64_t)entries.size() - 1}(rd));
+                std::uniform_int_distribution<std::int64_t>{0, (std::int64_t)entries.size() - 1}(mt));
         }
         else
         {

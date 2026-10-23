@@ -1,0 +1,58 @@
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: Auto
+
+IndentWidth: 4
+# ContinuationIndentWidth: 4
+UseTab: Never
+ColumnLimit: 120
+
+BreakBeforeBraces: Custom
+BraceWrapping:
+    AfterCaseLabel : true
+    AfterFunction : false
+    BeforeLambdaBody : false
+
+# Pointers/references attach to the name: "Renderer &renderer", "char *ptr"
+# NOTE: clang-format names this from the symbol's side, so "Right" = space before
+# the symbol (name-attached). "Left" would give "Renderer& renderer".
+DerivePointerAlignment: false
+PointerAlignment: Right
+
+# Indent case labels inside switch bodies (codebase style)
+IndentCaseLabels: true
+
+# Constructor initializers: colon at end of the parameter line, initializers
+# indented 8 spaces on following lines (codebase style):
+#   PlayerGui::PlayerGui(Renderer &renderer, ...):
+#           Widget(renderer), lmpv(lmpv) {
+BreakConstructorInitializers: AfterColon
+ConstructorInitializerIndentWidth: 8
+SpaceBeforeCtorInitializerColon: false
+
+# Space before parens for control statements only: "if (" but not "printf("
+SpaceBeforeParens: ControlStatements
+
+SortIncludes: true
+IncludeBlocks: Preserve
+
+# Braced-init lists are compact (no inner padding): "std::pair{a, b}"
+Cpp11BracedListStyle: true
+
+# Continuations indent by a fixed +4 rather than aligning to the open bracket
+AlignAfterOpenBracket: DontAlign
+
+# Keep arguments/parameters on one line when they fit
+BinPackArguments: true
+BinPackParameters: true
+
+AlignConsecutiveAssignments: true
+AlignOperands: true
+# AllowAllArgumentsOnNextLine: false
+
+# Do not collapse short if/loops onto a single line; only allow short inline fns
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+
+AllowShortLambdasOnASingleLine: Inline 
