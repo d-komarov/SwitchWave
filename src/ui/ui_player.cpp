@@ -207,15 +207,15 @@ bool PlayerGui::update_state(PadState &pad, HidTouchScreenState &touch) {
 
     HidNpadJoyHoldType holdType = {};
     hidGetNpadJoyHoldType(&holdType);
-    
+
     // Can only run when the swkbd isn't shown so don't bother using ImGui API
     if (!(this->menu.is_visible || this->console.is_visible)) {
         if (!this->seek_bar.is_visible && (down & (HidNpadButton_A | HidNpadButton_X)))
         this->lmpv.set_property_async("pause", int(!this->seek_bar.pause));
-        
+
         if (buttons & SeekBar::SeekBarPopButtons)
         this->seek_bar.begin_visible();
-        
+
         if ((buttons & (HidNpadButton_Up | HidNpadButton_Down)) &&
         (down & (HidNpadButton_ZL | HidNpadButton_ZR))) {
             auto chapter = this->seek_bar.chapter;
@@ -233,8 +233,8 @@ bool PlayerGui::update_state(PadState &pad, HidTouchScreenState &touch) {
     if (down & screensotButtonsMask) {
         this->lmpv.command_async("screenshot", "subtitles");
         this->set_show_string(500ms, "Saving screenshot");
-    }    
-    
+    }
+
     if (!ImGui::IsKeyDown(ImGuiKey_GamepadDpadDown) && !ImGui::IsKeyDown(ImGuiKey_GamepadDpadUp))
     {
         constexpr static std::array key_seek_map = {
@@ -243,7 +243,7 @@ bool PlayerGui::update_state(PadState &pad, HidTouchScreenState &touch) {
             std::pair{ImGuiKey_GamepadR1, +05.0},
             std::pair{ImGuiKey_GamepadR2, +60.0},
         };
-        
+
         bool has_seeked = false;
         for (auto &&[key, time]: key_seek_map)
         {
@@ -260,7 +260,7 @@ bool PlayerGui::update_state(PadState &pad, HidTouchScreenState &touch) {
                 this->menu.playlist.next(this->lmpv);
                 break;
             }
-            
+
             if (this->seek_bar.time_pos < this->seek_bar.duration)
             {
                 this->lmpv.set_property_async("time-pos", this->seek_bar.time_pos + time);
@@ -763,7 +763,7 @@ PlayerMenu::PlayerMenu(Renderer &renderer, Context &context, LibmpvController &l
 
     this->lmpv.add_end_file_callback(+[](void *user, mpv_event_end_file *event) {
         auto *self = static_cast<PlayerMenu *>(user);
-        if (event->reason == MPV_END_FILE_REASON_EOF && self->playlist.shuffle) {            
+        if (event->reason == MPV_END_FILE_REASON_EOF && self->playlist.shuffle) {
             self->playlist.next(self->lmpv);
         }
     }, this);
@@ -1007,7 +1007,7 @@ PlayerMenu::~PlayerMenu() {
 
 bool PlayerMenu::update_state(PadState &pad, HidTouchScreenState &touch) {
     auto now = std::chrono::system_clock::now();
-  
+
     if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft) && !ImGui::nx::isSwkbdVisible())
         this->is_visible ^= 1;
 
@@ -1113,14 +1113,14 @@ using std::ranges::distance;
 using std::ranges::find_if;
 
 std::size_t PlayerMenu::renderPlaylist()
-{    
+{
     std::size_t cur_playlist_selection = -1;
 
     if (!ImGui::BeginListBox("##playlistlistbox", ImVec2(-1, ImGui::GetTextLineHeightWithSpacing() * -9.75f))) {
         return cur_playlist_selection;
     }
     SW_SCOPEGUARD([] { ImGui::EndListBox(); });
-    
+
     utils::StaticString32 id_buffer;
     auto make_id = [&id_buffer](std::size_t i, std::string_view s)
     {
@@ -1131,7 +1131,7 @@ std::size_t PlayerMenu::renderPlaylist()
 
     using PlaylistEntryInfo = sw::ui::MpvPlaylist::PlaylistEntryInfo;
     std::function<PlaylistEntryInfo*(const int)> get_playlist_entry;
-    
+
     if (filter.IsActive())
     {
         std::vector<int> tmp;
@@ -1144,7 +1144,7 @@ std::size_t PlayerMenu::renderPlaylist()
             return static_cast<int>(filtered.size()) > index ? &playlist.entries[filtered[index]] : nullptr; };
         clipper.Begin(INT_MAX);
     }
-    else 
+    else
     {
         clipper.Begin(this->playlist.entries.size());
         if ((std::size_t)this->playlist.playlist_selection_index < this->playlist.entries.size()) {
@@ -1153,9 +1153,9 @@ std::size_t PlayerMenu::renderPlaylist()
         get_playlist_entry = [this](const int index) mutable
             -> PlaylistEntryInfo* { return &playlist.entries[index]; };
     }
-    
+
     utils::StaticString32 cbuf1;
-    
+
     while (clipper.Step())
     {
         for (auto i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
@@ -1193,7 +1193,7 @@ std::size_t PlayerMenu::renderPlaylist()
                     playlist.pos(lmpv, distance(playlist.entries.begin(), it));
                 }
             }
-            if (ImGui::IsItemFocused()) { 
+            if (ImGui::IsItemFocused()) {
                 any_item_focused_this_row = true;
             }
             if (is_selected && playlist.force_scroll_to_selected) {
@@ -1386,7 +1386,7 @@ void PlayerMenu::render() {
             filter.Clear();
         }
 
-        ImGui::SeparatorText("Playback");        
+        ImGui::SeparatorText("Playback");
 
         ImGui::Text("Demuxer cache");
         ImGui::SameLine();
@@ -1398,14 +1398,14 @@ void PlayerMenu::render() {
         ImGui::Text("Speed");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(125.f);
-        this->speed_slider.run(this->lmpv, "\ue08e##speed");        
-        
+        this->speed_slider.run(this->lmpv, "\ue08e##speed");
+
         ImGui::BeginGroup();
         ImGui::Checkbox("Fast presentation", &this->context.use_fast_presentation);
         ImGui::SameLine();
         ImGui::TextDisabled("\ue152"); // Question mark character in nintendo's extended font
         ImGui::EndGroup();
-        
+
         if (ImGui::IsItemFocused() || ImGui::IsItemHovered())
         {
             ImGui::BeginTooltip();
@@ -1415,16 +1415,16 @@ void PlayerMenu::render() {
                 "however a black frame will be shown whenever the UI appears");
                 ImGui::PopTextWrapPos();
                 ImGui::EndTooltip();
-        }            
+        }
 
         ImGui::SameLine(275.f);
 
         if (!ImGui::Checkbox("Playlist shuffle", &this->playlist.shuffle)) {
             this->playlist.history.clear();
         }
-        
+
         ImGui::SeparatorText("Other");
-        
+
         ImGui::Checkbox("Disable screensaver",        &this->context.disable_screensaver);
 
         ImGui::SameLine(275.f);
