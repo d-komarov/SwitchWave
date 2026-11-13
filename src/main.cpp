@@ -51,6 +51,8 @@ bool                g_application_mode;
 
 FsFileSystem        g_bis_user_fs;
 
+static int          s_nxlinkSock = -1;
+
 extern "C" u32 __nx_applet_exit_mode, __nx_nv_service_type, __nx_nv_transfermem_size;
 
 extern "C" void userAppInit(void) {
@@ -83,15 +85,26 @@ extern "C" void userAppInit(void) {
     // as required for secure NFS connections
     auto socket_conf = *socketGetDefaultInitConfig();
     socket_conf.bsd_service_type = BsdServiceType_Auto;
-    socketInitialize(&socket_conf);
-
+    if (R_SUCCEEDED(socketInitialize(&socket_conf)))
+    {
 #ifdef DEBUG
-    nxlinkStdio();
+        s_nxlinkSock = nxlinkStdio();
+        if (s_nxlinkSock >= 0) {
+            printf("printf output now goes to nxlink server\n");
+        }
 #endif
+    }
 }
 
 extern "C" void userAppExit(void) {
     appletUnlockExit();
+
+    if (s_nxlinkSock >= 0)
+    {
+        close(s_nxlinkSock);
+        s_nxlinkSock = -1;
+    }
+    socketExit();
 
     fsFsClose(&g_bis_user_fs);
     romfsExit();
@@ -104,8 +117,6 @@ extern "C" void userAppExit(void) {
     inssExit();
 
     nvExit();
-
-    socketExit();
 }
 
 namespace {
@@ -233,10 +244,10 @@ int menu_loop(sw::Renderer &renderer, sw::Context &context) {
             context.want_quit = true;
             break;
         }
-        
+
         HidNpadJoyHoldType holdType = {};
         hidGetNpadJoyHoldType(&holdType);
-        
+
         apply_pending_ums_changes(context);
         padUpdate(&g_pad);
 
@@ -248,35 +259,15 @@ int menu_loop(sw::Renderer &renderer, sw::Context &context) {
             hidSetNpadJoyHoldType(holdType);
             std::this_thread::sleep_for(50ms);
             rumble.stop();
-            // std::array<HidVibrationDeviceHandle, 1> vibrationDeviceHandles = {};
-
-            // if (R_SUCCEEDED(hidInitializeVibrationDevices(vibrationDeviceHandles.data(),
-            //                         1, HidNpadIdType_No1, HidNpadStyleTag_NpadFullKey)))
-            // {
-            //     HidVibrationValue vibrationValue;
-            //     vibrationValue.amp_low   = 0.2f;
-            //     vibrationValue.freq_low  = 160.f;
-            //     vibrationValue.amp_high  = 0.8f;
-            //     vibrationValue.freq_high = 320.f;
-            //     hidSendVibrationValue(vibrationDeviceHandles[0], &vibrationValue);
-
-            //     holdType = holdType ? HidNpadJoyHoldType_Vertical : HidNpadJoyHoldType_Horizontal;
-            //     hidSetNpadJoyHoldType(holdType);
-            //     std::this_thread::sleep_for(50ms);
-
-            //     vibrationValue.amp_low = 0.f;
-            //     vibrationValue.amp_high = 0.f;
-            //     hidSendVibrationValue(vibrationDeviceHandles[0], &vibrationValue);
-            // }
         }
 
         if (HidNpadJoyHoldType_Horizontal == holdType)
-        {            
+        {
 #define REMAP_BUTTON(orig, dest) do { \
     constexpr auto bitl_rev = [](unsigned long x){ return std::countr_zero(x); };  \
     g_pad.buttons_cur = copyBit(g_pad.buttons_cur, bitl_rev(dest), bitl_rev(orig)); \
     g_pad.buttons_old = copyBit(g_pad.buttons_old, bitl_rev(dest), bitl_rev(orig)); \
-} while (false);            
+} while (false);
             // Remap DPad buttons by "270 degrees rotation"
             // g_pad.buttons_cur = swapBits(swapBits(swapBits(g_pad.buttons_cur, 12, 13), 14, 15), 13, 15);
             // g_pad.buttons_old = swapBits(swapBits(swapBits(g_pad.buttons_old, 12, 13), 14, 15), 13, 15);
@@ -392,10 +383,10 @@ int video_loop(sw::Renderer &renderer, sw::Context &context) {
             context.set_error(-EIO);
             break;
         }
-        
+
         HidNpadJoyHoldType holdType = {};
         hidGetNpadJoyHoldType(&holdType);
-        
+
         padUpdate(&g_pad);
 
         if (HidNpadJoyHoldType_Horizontal == holdType)
