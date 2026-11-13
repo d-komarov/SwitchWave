@@ -444,6 +444,8 @@ class PlayerMenu final: public Widget {
                 type == SubwindowType::PlaylistFilepicker;
         }
 
+        std::size_t renderPlaylist();
+
     private:
         LibmpvController &lmpv;
         Context          &context;

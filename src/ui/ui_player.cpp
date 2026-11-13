@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <format>
+#include <ranges>
 #include <tuple>
 #include <utility>
 
@@ -1068,6 +1069,152 @@ bool PlayerMenu::update_state(PadState &pad, HidTouchScreenState &touch) {
     return false;
 }
 
+void ShowFilterKeyboard(ImGuiTextFilter& filter)
+{
+    SwkbdConfig kbd;
+    char outText[sizeof(filter.InputBuf)] = {};
+
+    ImGuiInputTextState* state = ImGui::GetInputTextState(ImGui::GetActiveID());
+
+    // Prefill keyboard with current InputText contents
+    if (state && state->TextA.Size > 0) {
+        ImTextStrToUtf8(outText, sizeof(outText), state->TextW.Data, state->TextW.Data + state->TextW.Size);
+    }
+
+    if (R_FAILED(swkbdCreate(&kbd, 0)))
+        return;
+
+    // Configure the standard system keyboard.
+    swkbdConfigMakePresetDefault(&kbd);
+
+    swkbdConfigSetHeaderText(&kbd, "Filter");
+    swkbdConfigSetGuideText(&kbd, "Enter filter text");
+
+    // Prepopulate with the current filter.
+    swkbdConfigSetInitialText(&kbd, filter.InputBuf);
+
+    if (R_SUCCEEDED(swkbdShow(&kbd, outText, sizeof(outText))))
+    {
+        if (state) {
+            state->ClearText();
+        }
+        // Update ImGui's filter only after successful input.
+        ImGui::GetIO().AddInputCharactersUTF8(outText);
+    }
+
+    swkbdClose(&kbd);
+}
+
+namespace {
+    static ImGuiTextFilter filter;
+}
+
+using std::ranges::distance;
+using std::ranges::find_if;
+
+std::size_t PlayerMenu::renderPlaylist()
+{    
+    std::size_t cur_playlist_selection = -1;
+
+    if (!ImGui::BeginListBox("##playlistlistbox", ImVec2(-1, ImGui::GetTextLineHeightWithSpacing() * -9.75f))) {
+        return cur_playlist_selection;
+    }
+    SW_SCOPEGUARD([] { ImGui::EndListBox(); });
+    
+    utils::StaticString32 id_buffer;
+    auto make_id = [&id_buffer](std::size_t i, std::string_view s)
+    {
+        std::snprintf(id_buffer.data(), id_buffer.capacity(), "%s##%ld", s.data(), i);
+        return id_buffer.data();
+    };
+    ImGuiListClipper clipper;
+
+    using PlaylistEntryInfo = sw::ui::MpvPlaylist::PlaylistEntryInfo;
+    std::function<PlaylistEntryInfo*(const int)> get_playlist_entry;
+    
+    if (filter.IsActive())
+    {
+        std::vector<int> tmp;
+        for (auto [index, value] : playlist.entries | std::views::enumerate | std::views::filter([&](const auto& p) {
+                                return filter.PassFilter(std::get<1>(p).name.c_str(), &std::get<1>(p).name.back()); }))
+        {
+            tmp.push_back(index);
+        }
+        get_playlist_entry = [filtered = std::move(tmp), this](const int index) mutable -> PlaylistEntryInfo* {
+            return static_cast<int>(filtered.size()) > index ? &playlist.entries[filtered[index]] : nullptr; };
+        clipper.Begin(INT_MAX);
+    }
+    else 
+    {
+        clipper.Begin(this->playlist.entries.size());
+        if ((std::size_t)this->playlist.playlist_selection_index < this->playlist.entries.size()) {
+            clipper.IncludeItemByIndex(this->playlist.playlist_selection_index);
+        }
+        get_playlist_entry = [this](const int index) mutable
+            -> PlaylistEntryInfo* { return &playlist.entries[index]; };
+    }
+    
+    utils::StaticString32 cbuf1;
+    
+    while (clipper.Step())
+    {
+        for (auto i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
+        {
+            const auto track = get_playlist_entry(i);
+
+            if (!track) { continue; }
+
+            if (track->id == this->playlist_selection_id) {
+                cur_playlist_selection = i;
+            }
+            const bool is_selected = (this->playlist.playlist_selection_index == i);
+            bool any_item_focused_this_row = false;
+            if (ImGui::Button(make_id(i, "\ue0f2")))
+            {
+                std::snprintf(cbuf1.data(), cbuf1.capacity(), "%ld", std::int64_t(i));
+                this->lmpv.command_async("playlist-remove", cbuf1.c_str());
+            }
+            if (ImGui::IsItemFocused()) {
+                 any_item_focused_this_row = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::RadioButton(make_id(i, "##"), track->id == this->playlist_selection_id)) {
+                this->playlist_selection_id = track->id;
+            }
+            if (ImGui::IsItemFocused()) {
+                any_item_focused_this_row = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Selectable(track->name.c_str(), is_selected))
+            {
+                this->playlist.playlist_selection_index = i;
+                const auto it = find_if(playlist.entries, [id = track->id](const auto& e){ return e.id == id; });
+                if (it != playlist.entries.end()) {
+                    playlist.pos(lmpv, distance(playlist.entries.begin(), it));
+                }
+            }
+            if (ImGui::IsItemFocused()) { 
+                any_item_focused_this_row = true;
+            }
+            if (is_selected && playlist.force_scroll_to_selected) {
+                ImGui::SetKeyboardFocusHere(-1);
+            }
+            if (any_item_focused_this_row)
+            {
+                ImGui::SetScrollX(0.0f);
+                if (is_selected && playlist.force_scroll_to_selected)
+                {
+                    ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleCenterY | ImGuiScrollFlags_KeepVisibleEdgeX);
+                    ImGui::SetScrollX(0.0f);
+                    playlist.force_scroll_to_selected = false;
+                }
+            }
+        }
+    }
+
+    return cur_playlist_selection;
+}
+
 void PlayerMenu::render() {
     if (!this->is_visible)
         return;
@@ -1196,139 +1343,97 @@ void PlayerMenu::render() {
 
     if (ImGui::BeginTabItem("Misc")) {
         SW_SCOPEGUARD([] { ImGui::EndTabItem(); });
+        SW_SCOPEGUARD([scale = ImGui::GetCurrentWindow()->FontWindowScale] { ImGui::SetWindowFontScale(scale); });
+        ImGui::SetWindowFontScale(0.8);
 
         ImGui::SeparatorText("Playlist");
 
-        utils::StaticString32 id_buffer;
-        auto make_id = [&id_buffer](std::size_t i, std::string_view s) {
-            std::snprintf(id_buffer.data(), id_buffer.capacity(), "%s##%ld", s.data(), i);
-            return id_buffer.data();
-        };
-
-        utils::StaticString32 cbuf1, cbuf2;
-        std::size_t cur_playlist_selection = -1;
-        if (ImGui::BeginListBox("##playlistlistbox", ImVec2(-1, 0))) {
-            SW_SCOPEGUARD([] { ImGui::EndListBox(); });
-
-            ImGui::SetWindowFontScale(0.8);
-            SW_SCOPEGUARD([] { ImGui::SetWindowFontScale(1.0); });
-
-            ImGuiListClipper clipper;
-            clipper.Begin(this->playlist.entries.size());
-
-            if ((std::size_t)this->playlist.playlist_selection_index < this->playlist.entries.size()) {
-                clipper.IncludeItemByIndex(this->playlist.playlist_selection_index);
-            }
-
-            while (clipper.Step()) {
-                for (auto i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-                    auto &track = this->playlist.entries[i];
-
-                    if (track.id == this->playlist_selection_id)
-                        cur_playlist_selection = i;
-
-                    const bool is_selected = (this->playlist.playlist_selection_index == i);
-                    bool any_item_focused_this_row = false;
-
-                    if (ImGui::Button(make_id(i, "\ue0f2"))) {
-                        std::snprintf(cbuf1.data(), cbuf1.capacity(), "%ld", std::int64_t(i));
-                        this->lmpv.command_async("playlist-remove", cbuf1.c_str());
-                    }
-
-                    if (ImGui::IsItemFocused()) any_item_focused_this_row = true;
-
-                    ImGui::SameLine();
-                    if (ImGui::RadioButton(make_id(i, "##"), track.id == this->playlist_selection_id))
-                        this->playlist_selection_id = track.id;
-
-                    if (ImGui::IsItemFocused()) any_item_focused_this_row = true;
-
-                    ImGui::SameLine();
-                    if (ImGui::Selectable(track.name.c_str(), is_selected))
-                    {
-                        this->playlist.playlist_selection_index = i;
-                        playlist.pos(lmpv, std::int64_t(i));
-                    }
-
-                    if (ImGui::IsItemFocused()) any_item_focused_this_row = true;
-
-                    if (is_selected && playlist.force_scroll_to_selected)
-                    {
-                        ImGui::SetKeyboardFocusHere(-1);
-                    }
-
-                    if (any_item_focused_this_row) {
-                        ImGui::SetScrollX(0.0f);
-
-                        if (is_selected && playlist.force_scroll_to_selected)
-                        {
-                            ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleCenterY | ImGuiScrollFlags_KeepVisibleEdgeX);
-                            ImGui::SetScrollX(0.0f);
-                            playlist.force_scroll_to_selected = false;
-                        }
-                    }
-                }
-            }
-        }
+        const auto cur_playlist_selection = renderPlaylist();
 
         if (ImGui::Button("\ue0f1"))
+        {
             this->cur_subwindow = (this->cur_subwindow != SubwindowType::PlaylistFilepicker) ?
                 SubwindowType::PlaylistFilepicker : SubwindowType::None;
-
+        }
         ImGui::SameLine();
-        if (ImGui::Button("\ue092") && (cur_playlist_selection != -1ull)) {
+        utils::StaticString32 cbuf1, cbuf2;
+        if (ImGui::Button("\ue092") && (cur_playlist_selection != -1ull))
+        {
             std::snprintf(cbuf1.data(), cbuf1.capacity(), "%ld", cur_playlist_selection);
             std::snprintf(cbuf2.data(), cbuf2.capacity(), "%ld", cur_playlist_selection - 1);
             this->lmpv.command_async("playlist-move", cbuf1.c_str(), cbuf2.c_str());
         }
-
         ImGui::SameLine();
-        if (ImGui::Button("\ue093") && (cur_playlist_selection != -1ull)) {
+        if (ImGui::Button("\ue093") && (cur_playlist_selection != -1ull))
+        {
             std::snprintf(cbuf1.data(), cbuf1.capacity(), "%ld", cur_playlist_selection);
             std::snprintf(cbuf2.data(), cbuf2.capacity(), "%ld",
                 (cur_playlist_selection == this->playlist.entries.size() - 1) ? 0 : cur_playlist_selection + 2);
             this->lmpv.command_async("playlist-move", cbuf1.c_str(), cbuf2.c_str());
         }
-
         ImGui::SameLine();
-        if (ImGui::Button("Clear"))
+        if (ImGui::Button("Clear")) {
             this->lmpv.command_async("playlist-clear");
-
+        }
         ImGui::SameLine();
-        if (!ImGui::Checkbox("Shuffle", &this->playlist.shuffle))
-        {
-            this->playlist.history.clear();
+        const auto clearBtnWidth = ImGui::CalcTextSize("\ue098").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        filter.Draw("##SearchFilter", ImGui::GetContentRegionAvail().x - clearBtnWidth - ImGui::GetStyle().ItemSpacing.x);
+        if (ImGui::IsItemActivated()) {
+            ShowFilterKeyboard(filter);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("\ue098")) {
+            filter.Clear();
         }
 
-        ImGui::SeparatorText("Speed");
-        this->speed_slider.run(this->lmpv, "Reset##speed");
+        ImGui::SeparatorText("Playback");        
 
-        ImGui::SeparatorText("Demuxer cache");
+        ImGui::Text("Demuxer cache");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80);
         this->cache_combo.run(this->lmpv);
 
-        ImGui::SeparatorText("Log level");
-        this->log_level_combo.run(this->lmpv);
+        ImGui::SameLine(275.f);
 
-        ImGui::SeparatorText("Other");
+        ImGui::Text("Speed");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(125.f);
+        this->speed_slider.run(this->lmpv, "\ue08e##speed");        
+        
         ImGui::BeginGroup();
         ImGui::Checkbox("Fast presentation", &this->context.use_fast_presentation);
-
         ImGui::SameLine();
         ImGui::TextDisabled("\ue152"); // Question mark character in nintendo's extended font
         ImGui::EndGroup();
-
-        if (ImGui::IsItemFocused() || ImGui::IsItemHovered()) {
+        
+        if (ImGui::IsItemFocused() || ImGui::IsItemHovered())
+        {
             ImGui::BeginTooltip();
             ImGui::PushTextWrapPos(ImGui::GetFontSize() * 20.0f);
             ImGui::TextUnformatted("Puts mpv in charge of frame presentation, "
                 "resulting in more accurate timings and reduced GPU usage, "
                 "however a black frame will be shown whenever the UI appears");
-            ImGui::PopTextWrapPos();
-            ImGui::EndTooltip();
-        }
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+        }            
 
+        ImGui::SameLine(275.f);
+
+        if (!ImGui::Checkbox("Playlist shuffle", &this->playlist.shuffle)) {
+            this->playlist.history.clear();
+        }
+        
+        ImGui::SeparatorText("Other");
+        
         ImGui::Checkbox("Disable screensaver",        &this->context.disable_screensaver);
-        ImGui::Checkbox("Override screenshot button", &this->context.override_screenshot_button);
+
+        ImGui::SameLine(275.f);
+
+        ImGui::Text("Log level");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(135);
+        this->log_level_combo.run(this->lmpv);
+        ImGui::Checkbox("Remap screenshot key", &this->context.override_screenshot_button);
     }
 
     auto bullet_wrapped = [](std::string_view fmt, auto &&...args) {
